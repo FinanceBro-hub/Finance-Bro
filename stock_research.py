@@ -507,7 +507,7 @@ def render_research_welcome() -> None:
         )
 
     st.caption(
-        "Enter up to eight tickers in the sidebar and press Run Stock Research."
+        "Enter up to 15 tickers in the sidebar and press Run Stock Research."
     )
 
 
@@ -1462,3 +1462,4 @@ def render_stock_research() -> None:
         "Market prices, company metadata and statements are retrieved through yfinance from Yahoo "
         "Finance. Availability and completeness vary by security and market."
     )
+
