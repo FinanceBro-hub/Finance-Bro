@@ -1319,7 +1319,7 @@ render_html(
             </div>
 
             <div class="fb-hero-title">
-                Understand Today. Invest Better Tomorrow.
+                Understand Today. Invest&nbsp;Better&nbsp;Tomorrow.
             </div>
 
             <p class="fb-hero-copy">
@@ -1410,23 +1410,17 @@ with st.sidebar:
         options=[
             "Stock Research",
             "Portfolio Analysis",
-            "Live Investment",
         ],
         index=0,
         help=(
-            "Research companies, analyze hypothetical portfolios or follow "
-            "saved simulated investments using the latest available prices."
+            "Research companies or analyze hypothetical portfolios using "
+            "the latest available prices."
         ),
         key="analysis_mode_selector",
     )
 
 if analysis_mode == "Stock Research":
     render_stock_research()
-    render_brand_footer()
-    st.stop()
-
-if analysis_mode == "Live Investment":
-    render_live_investment()
     render_brand_footer()
     st.stop()
 
