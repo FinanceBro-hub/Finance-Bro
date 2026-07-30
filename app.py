@@ -1319,7 +1319,7 @@ render_html(
             </div>
 
             <div class="fb-hero-title">
-                Understand Today. Invest Better Tomorrow.
+                Understand Today. Invest&nbsp;Better&nbsp;Tomorrow.
             </div>
 
             <p class="fb-hero-copy">
@@ -1410,26 +1410,57 @@ with st.sidebar:
         options=[
             "Stock Research",
             "Portfolio Analysis",
-            "Live Investment",
         ],
         index=0,
         help=(
-            "Research companies, analyze hypothetical portfolios or follow "
-            "saved simulated investments using the latest available prices."
+            "Research companies or analyze hypothetical portfolios using "
+            "the latest available prices."
         ),
         key="analysis_mode_selector",
+    )
+
+    render_html(
+        """
+        <div
+            aria-disabled="true"
+            title="Live Investment is being prepared for a future release."
+            style="
+                margin-top: 0.45rem;
+                padding: 0.70rem 0.80rem;
+                border: 1px solid rgba(10, 31, 68, 0.14);
+                border-radius: 0.70rem;
+                background: rgba(10, 31, 68, 0.045);
+                color: rgba(10, 31, 68, 0.55);
+                cursor: not-allowed;
+                user-select: none;
+                pointer-events: none;
+            "
+        >
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
+                <span style="font-weight:700;">Live Investment</span>
+                <span
+                    style="
+                        padding: 0.15rem 0.45rem;
+                        border-radius: 999px;
+                        background: rgba(22, 99, 240, 0.10);
+                        color: rgba(22, 99, 240, 0.68);
+                        font-size: 0.72rem;
+                        font-weight: 800;
+                        letter-spacing: 0.02em;
+                        white-space: nowrap;
+                    "
+                >
+                    Coming soon
+                </span>
+            </div>
+        </div>
+        """
     )
 
 if analysis_mode == "Stock Research":
     render_stock_research()
     render_brand_footer()
     st.stop()
-
-if analysis_mode == "Live Investment":
-    render_live_investment()
-    render_brand_footer()
-    st.stop()
-
 
 # ============================================================
 # PORTFOLIO SIDEBAR
