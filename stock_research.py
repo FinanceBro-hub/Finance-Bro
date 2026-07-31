@@ -511,64 +511,276 @@ def render_research_welcome() -> None:
     )
 
 
+
+def _format_snapshot_date(value: Any, include_time: bool = False) -> str:
+    """Format ISO dates used by Company Snapshot provenance labels."""
+
+    if value is None or str(value).strip() in ("", "None", "NaT"):
+        return ""
+
+    text = str(value).strip()
+
+    # Preserve descriptive periods such as "Latest five years of weekly returns".
+    if not any(character.isdigit() for character in text):
+        return text
+
+    try:
+        timestamp = pd.Timestamp(text)
+        if pd.isna(timestamp):
+            return text
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.tz_convert("UTC")
+        if include_time:
+            return timestamp.strftime("%d %b %Y, %H:%M UTC")
+        return timestamp.strftime("%d %b %Y")
+    except Exception:
+        # Date ranges and other transparent free-text periods stay unchanged.
+        return text
+
+
+def _snapshot_metadata_line(metadata: dict[str, Any]) -> str:
+    """Create the compact source-and-date label shown below each metric."""
+
+    source = str(metadata.get("source") or "Unavailable")
+    parts = [source]
+
+    as_of = _format_snapshot_date(metadata.get("as_of"))
+    period = _format_snapshot_date(metadata.get("period"))
+    retrieved = _format_snapshot_date(
+        metadata.get("retrieved_at"),
+        include_time=True,
+    )
+
+    if as_of:
+        parts.append(f"As of {as_of}")
+    if period:
+        parts.append(f"Period: {period}")
+    if not as_of and not period and retrieved:
+        parts.append(f"Checked {retrieved}")
+
+    return " · ".join(parts)
+
+
+def _render_snapshot_metric(
+    label: str,
+    value: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Render one metric with its provenance directly underneath."""
+
+    st.metric(label=label, value=value)
+    st.caption(_snapshot_metadata_line(metadata))
+
+
+
 def render_company_snapshot(ticker: str, profile: dict[str, Any]) -> None:
     st.subheader(f"{profile['name']} ({ticker})")
 
-    st.caption(
-        f"{profile['quote_type']} · {profile['exchange']} · "
-        f"{profile['sector']} · {profile['industry']} · {profile['country']}"
+    caption_parts = [
+        str(profile.get(key))
+        for key in ("quote_type", "exchange", "sector", "industry", "country")
+        if str(profile.get(key) or "").strip() not in ("", "N/A", "None")
+    ]
+    st.caption(" · ".join(caption_parts) if caption_parts else "Company metadata unavailable")
+
+    st.info(
+        "**Data provenance:** each metric shows whether it came directly from Yahoo Finance, "
+        "was calculated or estimated by Finance Bro, or was unavailable. Market dates and "
+        "financial reporting periods are shown separately because they may not be the same."
     )
 
     currency = str(profile.get("trading_currency") or "")
+    metadata = profile.get("metric_metadata") or {}
 
     metric_columns = st.columns(4)
     metrics = [
-        ("Current Price", format_large_value(profile.get("current_price"), currency)),
-        ("Market Capitalization", format_large_value(profile.get("market_cap"), currency)),
-        ("Enterprise Value", format_large_value(profile.get("enterprise_value"), currency)),
-        ("Yahoo Beta", format_number(profile.get("beta"), 3)),
+        (
+            "Current Price",
+            format_large_value(profile.get("current_price"), currency),
+            "current_price",
+        ),
+        (
+            "Market Capitalization",
+            format_large_value(profile.get("market_cap"), currency),
+            "market_cap",
+        ),
+        (
+            "Enterprise Value",
+            format_large_value(profile.get("enterprise_value"), currency),
+            "enterprise_value",
+        ),
+        (
+            "Beta",
+            format_number(profile.get("beta"), 3),
+            "beta",
+        ),
     ]
 
-    for column, (label, value) in zip(metric_columns, metrics):
+    for column, (label, value, metadata_key) in zip(metric_columns, metrics):
         with column:
-            st.metric(label=label, value=value)
+            _render_snapshot_metric(
+                label,
+                value,
+                metadata.get(metadata_key, {}),
+            )
 
     valuation_columns = st.columns(4)
     valuation_metrics = [
-        ("Trailing P/E", format_number(profile.get("trailing_pe"), 2)),
-        ("Forward P/E", format_number(profile.get("forward_pe"), 2)),
-        ("Price-to-Book", format_number(profile.get("price_to_book"), 2)),
-        ("EV / EBITDA", format_number(profile.get("enterprise_to_ebitda"), 2)),
+        (
+            "Trailing P/E",
+            format_number(profile.get("trailing_pe"), 2),
+            "trailing_pe",
+        ),
+        (
+            "Forward P/E",
+            format_number(profile.get("forward_pe"), 2),
+            "forward_pe",
+        ),
+        (
+            "Price-to-Book",
+            format_number(profile.get("price_to_book"), 2),
+            "price_to_book",
+        ),
+        (
+            "EV / EBITDA",
+            format_number(profile.get("enterprise_to_ebitda"), 2),
+            "enterprise_to_ebitda",
+        ),
     ]
 
-    for column, (label, value) in zip(valuation_columns, valuation_metrics):
+    for column, (label, value, metadata_key) in zip(
+        valuation_columns,
+        valuation_metrics,
+    ):
         with column:
-            st.metric(label=label, value=value)
+            _render_snapshot_metric(
+                label,
+                value,
+                metadata.get(metadata_key, {}),
+            )
 
     quality_columns = st.columns(4)
     quality_metrics = [
-        ("Dividend Yield", format_percent(profile.get("dividend_yield"), input_is_decimal=True)),
-        ("Return on Equity", format_percent(profile.get("return_on_equity"), input_is_decimal=True)),
-        ("Return on Assets", format_percent(profile.get("return_on_assets"), input_is_decimal=True)),
+        (
+            "Dividend Yield",
+            format_percent(
+                profile.get("dividend_yield"),
+                input_is_decimal=True,
+            ),
+            "dividend_yield",
+        ),
+        (
+            "Return on Equity",
+            format_percent(
+                profile.get("return_on_equity"),
+                input_is_decimal=True,
+            ),
+            "return_on_equity",
+        ),
+        (
+            "Return on Assets",
+            format_percent(
+                profile.get("return_on_assets"),
+                input_is_decimal=True,
+            ),
+            "return_on_assets",
+        ),
         (
             "52-Week Range",
             f"{format_number(profile.get('fifty_two_week_low'))} — "
             f"{format_number(profile.get('fifty_two_week_high'))}",
+            "fifty_two_week_range",
         ),
     ]
 
-    for column, (label, value) in zip(quality_columns, quality_metrics):
+    for column, (label, value, metadata_key) in zip(
+        quality_columns,
+        quality_metrics,
+    ):
         with column:
-            st.metric(label=label, value=value)
+            _render_snapshot_metric(
+                label,
+                value,
+                metadata.get(metadata_key, {}),
+            )
+
+    transparent_methods = {
+        "current_price": "Current Price",
+        "market_cap": "Market Capitalization",
+        "enterprise_value": "Enterprise Value",
+        "beta": "Beta",
+        "trailing_pe": "Trailing P/E",
+        "forward_pe": "Forward P/E",
+        "price_to_book": "Price-to-Book",
+        "enterprise_to_ebitda": "EV / EBITDA",
+        "dividend_yield": "Dividend Yield",
+        "return_on_equity": "Return on Equity",
+        "return_on_assets": "Return on Assets",
+        "fifty_two_week_range": "52-Week Range",
+    }
+
+    with st.expander("Sources, dates and calculation methods", expanded=False):
+        for metadata_key, display_label in transparent_methods.items():
+            record = metadata.get(metadata_key, {})
+            source_line = _snapshot_metadata_line(record)
+            method = str(record.get("method") or "").strip()
+            note = str(record.get("note") or "").strip()
+
+            st.markdown(f"**{display_label}**")
+            st.caption(source_line)
+
+            if method:
+                st.write(method)
+            if note:
+                st.caption(note)
+
+    fallback_count = len(profile.get("fallback_metrics") or [])
+    unavailable_count = len(profile.get("unavailable_metrics") or [])
+
+    if fallback_count:
+        st.warning(
+            f"{fallback_count} metric(s) could not be obtained directly from Yahoo Finance. "
+            "Finance Bro used transparent calculations or estimates and labelled each one above."
+        )
+
+    if unavailable_count:
+        st.caption(
+            f"{unavailable_count} metric(s) remain unavailable because Finance Bro did not have "
+            "enough reliable information to calculate them without making unsupported assumptions."
+        )
 
     if profile.get("summary"):
         with st.expander("Company Description", expanded=False):
             st.write(profile["summary"])
 
-    st.info(
-        f"**Trading currency:** {profile['trading_currency']}  \n"
-        f"**Financial-statement reporting currency:** {profile['financial_currency']}"
+    retrieved_text = _format_snapshot_date(
+        profile.get("retrieved_at"),
+        include_time=True,
     )
+    latest_market_text = _format_snapshot_date(profile.get("latest_market_date"))
+    latest_financial_text = _format_snapshot_date(
+        profile.get("latest_financial_period")
+    )
+
+    timing_lines = [
+        f"**Trading currency:** {profile['trading_currency']}",
+        (
+            "**Financial-statement reporting currency:** "
+            f"{profile['financial_currency']}"
+        ),
+    ]
+
+    if latest_market_text:
+        timing_lines.append(f"**Latest Yahoo market date:** {latest_market_text}")
+    if latest_financial_text:
+        timing_lines.append(
+            f"**Latest financial period used by available calculations:** "
+            f"{latest_financial_text}"
+        )
+    if retrieved_text:
+        timing_lines.append(f"**Data retrieved:** {retrieved_text}")
+
+    st.info("  \n".join(timing_lines))
 
 
 def render_financial_statement_table(
@@ -1325,7 +1537,8 @@ def render_stock_research() -> None:
             key="stock_research_snapshot_ticker",
         )
         with st.spinner(f"Loading company information for {snapshot_ticker}..."):
-            profile = load_profile(snapshot_ticker)
+            snapshot_package = load_financial_package(snapshot_ticker)
+            profile = snapshot_package["profile"]
         render_company_snapshot(snapshot_ticker, profile)
 
     with statements_tab:
