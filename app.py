@@ -1688,13 +1688,16 @@ with st.sidebar:
                 if portfolio_currency == "EUR":
 
                     selected_risk_free_source = (
-                        "ECB 3-month compounded €STR average rate"
+                        "ECB 3-month compounded €STR, with the ECB "
+                        "deposit facility rate as a historical fallback"
                     )
 
                     selected_risk_free_description = (
                         "Because the portfolio currency is EUR, Finance Bro "
-                        "automatically uses the ECB 3-month compounded €STR "
-                        "average rate."
+                        "uses the ECB 3-month compounded €STR whenever it is "
+                        "available. Earlier dates use the official ECB "
+                        "deposit facility rate and are identified as "
+                        "fallback observations in the methodology."
                     )
 
                 else:
