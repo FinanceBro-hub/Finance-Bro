@@ -1511,9 +1511,10 @@ with st.sidebar:
 
         ticker_input = st.text_input(
             "Tickers",
-            value="AAPL, MSFT, GOOGL",
+            value="",
+            placeholder="e.g. AAPL, MSFT, GOOGL",
             help="Enter the tickers separated by commas.",
-            key="portfolio_ticker_input",
+            key="portfolio_ticker_input_v2",
         )
 
         preview_tickers = [
