@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from typing import Any
+import html
+import re
 
 import numpy as np
 import pandas as pd
@@ -32,6 +34,18 @@ BRAND_MUTED = "#64748B"
 BRAND_BORDER = "#DDE7F5"
 
 MAX_RESEARCH_TICKERS = 15
+
+NEWS_PERIOD_OPTIONS = {
+    "24 hours": pd.Timedelta(hours=24),
+    "7 days": pd.Timedelta(days=7),
+    "30 days": pd.Timedelta(days=30),
+}
+
+NEWS_TYPE_OPTIONS = {
+    "All": "all",
+    "News": "news",
+    "Press Releases": "press releases",
+}
 
 
 BENCHMARK_OPTIONS = {
@@ -171,6 +185,645 @@ def load_profile(ticker: str) -> dict[str, Any]:
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_financial_package(ticker: str) -> dict[str, Any]:
     return fetch_financial_package(ticker)
+
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_company_news(
+    ticker: str,
+    news_tab: str,
+    count: int = 50,
+) -> dict[str, Any]:
+    """
+    Retrieve recent Yahoo Finance news for one ticker.
+
+    Primary method:
+        yfinance.Ticker.get_news()
+
+    Transparent fallback:
+        yfinance.Search().news
+
+    The fallback is broader than the ticker-specific feed, so the
+    interface identifies it whenever it is used.
+    """
+
+    ticker = ticker.strip().upper()
+    retrieved_at = pd.Timestamp.now(tz="UTC")
+
+    primary_error = ""
+    fallback_error = ""
+    articles: list[dict[str, Any]] = []
+    retrieval_method = "Yahoo Finance ticker feed"
+    used_search_fallback = False
+
+    try:
+        ticker_object = yf.Ticker(ticker)
+
+        try:
+            raw_news = ticker_object.get_news(
+                count=count,
+                tab=news_tab,
+            )
+        except TypeError:
+            # Compatibility with older yfinance releases.
+            raw_news = ticker_object.get_news(
+                count=count
+            )
+
+        if isinstance(raw_news, list):
+            articles = [
+                article
+                for article in raw_news
+                if isinstance(article, dict)
+            ]
+
+    except Exception as error:
+        primary_error = str(error)
+
+    if not articles:
+        try:
+            try:
+                search_object = yf.Search(
+                    ticker,
+                    max_results=1,
+                    news_count=count,
+                    enable_fuzzy_query=False,
+                )
+            except TypeError:
+                search_object = yf.Search(
+                    ticker,
+                    max_results=1,
+                    news_count=count,
+                )
+
+            raw_search_news = getattr(
+                search_object,
+                "news",
+                [],
+            )
+
+            if isinstance(raw_search_news, list):
+                articles = [
+                    article
+                    for article in raw_search_news
+                    if isinstance(article, dict)
+                ]
+
+            if articles:
+                retrieval_method = (
+                    "Yahoo Finance search fallback"
+                )
+                used_search_fallback = True
+
+        except Exception as error:
+            fallback_error = str(error)
+
+    return {
+        "ticker": ticker,
+        "requested_tab": news_tab,
+        "articles": articles,
+        "retrieved_at": retrieved_at,
+        "retrieval_method": retrieval_method,
+        "used_search_fallback": used_search_fallback,
+        "primary_error": primary_error,
+        "fallback_error": fallback_error,
+    }
+
+
+def clean_news_text(value: Any) -> str:
+    """Normalize publisher-supplied text without changing its meaning."""
+
+    if value is None:
+        return ""
+
+    cleaned = html.unescape(
+        re.sub(
+            r"<[^>]+>",
+            " ",
+            str(value),
+        )
+    )
+
+    return re.sub(
+        r"\s+",
+        " ",
+        cleaned,
+    ).strip()
+
+
+def escape_markdown_text(value: str) -> str:
+    """Escape external text before inserting it into Markdown."""
+
+    escaped = value.replace("\\", "\\\\")
+
+    for character in (
+        "*",
+        "_",
+        "[",
+        "]",
+        "(",
+        ")",
+        "#",
+        "`",
+        ">",
+    ):
+        escaped = escaped.replace(
+            character,
+            f"\\{character}",
+        )
+
+    return escaped
+
+
+def parse_news_timestamp(value: Any) -> pd.Timestamp | None:
+    """Parse Unix or ISO publication timestamps into UTC."""
+
+    if value in (None, ""):
+        return None
+
+    try:
+        if isinstance(
+            value,
+            (
+                int,
+                float,
+                np.integer,
+                np.floating,
+            ),
+        ):
+            numeric_value = float(value)
+            unit = (
+                "ms"
+                if abs(numeric_value) >= 1_000_000_000_000
+                else "s"
+            )
+
+            timestamp = pd.to_datetime(
+                numeric_value,
+                unit=unit,
+                utc=True,
+                errors="coerce",
+            )
+        else:
+            timestamp = pd.to_datetime(
+                value,
+                utc=True,
+                errors="coerce",
+            )
+
+    except Exception:
+        return None
+
+    if pd.isna(timestamp):
+        return None
+
+    return pd.Timestamp(timestamp)
+
+
+def extract_news_url(value: Any) -> str:
+    """Extract and validate an external article URL."""
+
+    if isinstance(value, dict):
+        value = (
+            value.get("url")
+            or value.get("href")
+            or ""
+        )
+
+    url = clean_news_text(value)
+
+    if url.startswith(
+        (
+            "https://",
+            "http://",
+        )
+    ):
+        return url
+
+    return ""
+
+
+def normalize_news_article(
+    article: dict[str, Any],
+    requested_type: str,
+) -> dict[str, Any] | None:
+    """
+    Normalize both current and legacy yfinance news response formats.
+    """
+
+    nested_content = article.get("content")
+
+    if isinstance(nested_content, dict):
+        payload = nested_content
+    else:
+        payload = article
+
+    title = clean_news_text(
+        payload.get("title")
+        or article.get("title")
+    )
+
+    if not title:
+        return None
+
+    summary = clean_news_text(
+        payload.get("summary")
+        or payload.get("description")
+        or article.get("summary")
+        or article.get("description")
+    )
+
+    provider_value = (
+        payload.get("provider")
+        or article.get("provider")
+    )
+
+    if isinstance(provider_value, dict):
+        publisher = clean_news_text(
+            provider_value.get("displayName")
+            or provider_value.get("name")
+            or provider_value.get("title")
+        )
+    else:
+        publisher = clean_news_text(
+            provider_value
+        )
+
+    if not publisher:
+        publisher = clean_news_text(
+            article.get("publisher")
+            or payload.get("publisher")
+        )
+
+    if not publisher:
+        publisher = "Publisher not supplied"
+
+    published_at = parse_news_timestamp(
+        payload.get("pubDate")
+        or payload.get("providerPublishTime")
+        or payload.get("publishedAt")
+        or article.get("pubDate")
+        or article.get("providerPublishTime")
+        or article.get("publishedAt")
+    )
+
+    url_candidates = [
+        payload.get("clickThroughUrl"),
+        payload.get("canonicalUrl"),
+        payload.get("previewUrl"),
+        payload.get("link"),
+        payload.get("url"),
+        article.get("clickThroughUrl"),
+        article.get("canonicalUrl"),
+        article.get("link"),
+        article.get("url"),
+    ]
+
+    article_url = ""
+
+    for candidate in url_candidates:
+        article_url = extract_news_url(
+            candidate
+        )
+
+        if article_url:
+            break
+
+    content_type = clean_news_text(
+        payload.get("contentType")
+        or payload.get("type")
+        or article.get("contentType")
+        or article.get("type")
+    )
+
+    type_text = content_type.lower()
+
+    is_press_release = (
+        "press" in type_text
+        or requested_type == "Press Releases"
+    )
+
+    article_type = (
+        "Press Release"
+        if is_press_release
+        else "News"
+    )
+
+    identifier = clean_news_text(
+        payload.get("id")
+        or payload.get("uuid")
+        or article.get("id")
+        or article.get("uuid")
+    )
+
+    return {
+        "id": identifier,
+        "title": title,
+        "summary": summary,
+        "publisher": publisher,
+        "published_at": published_at,
+        "url": article_url,
+        "article_type": article_type,
+        "is_press_release": is_press_release,
+    }
+
+
+def prepare_news_articles(
+    raw_articles: list[dict[str, Any]],
+    period_label: str,
+    type_label: str,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Filter, deduplicate and order news articles."""
+
+    now_utc = pd.Timestamp.now(tz="UTC")
+    period_delta = NEWS_PERIOD_OPTIONS[
+        period_label
+    ]
+    earliest_allowed = (
+        now_utc
+        - period_delta
+    )
+
+    prepared: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+
+    for raw_article in raw_articles:
+        normalized = normalize_news_article(
+            raw_article,
+            type_label,
+        )
+
+        if normalized is None:
+            continue
+
+        published_at = normalized[
+            "published_at"
+        ]
+
+        # A publication date is required because the user selected
+        # a time window and Finance Bro should not guess article age.
+        if published_at is None:
+            continue
+
+        if published_at < earliest_allowed:
+            continue
+
+        if (
+            type_label == "News"
+            and normalized["is_press_release"]
+        ):
+            continue
+
+        if (
+            type_label == "Press Releases"
+            and not normalized["is_press_release"]
+        ):
+            continue
+
+        deduplication_key = (
+            normalized["url"].strip().lower()
+            or normalized["id"].strip().lower()
+            or re.sub(
+                r"[^a-z0-9]+",
+                "",
+                normalized["title"].lower(),
+            )
+        )
+
+        if not deduplication_key:
+            continue
+
+        if deduplication_key in seen_keys:
+            continue
+
+        seen_keys.add(
+            deduplication_key
+        )
+        prepared.append(
+            normalized
+        )
+
+    prepared.sort(
+        key=lambda item: item["published_at"],
+        reverse=True,
+    )
+
+    return prepared[:limit]
+
+
+def render_latest_news(
+    valid_tickers: list[str],
+) -> None:
+    """Render the transparent Latest News workspace."""
+
+    st.subheader("Latest Company News")
+    st.caption(
+        "Review recent external coverage before completing the "
+        "company analysis. Headlines and summaries are publisher-"
+        "supplied metadata and are not investment recommendations."
+    )
+
+    control_1, control_2, control_3 = st.columns(
+        [1.2, 1.0, 1.0]
+    )
+
+    with control_1:
+        news_ticker = st.selectbox(
+            "Latest News Company",
+            options=valid_tickers,
+            key="stock_research_news_ticker",
+        )
+
+    with control_2:
+        news_period = st.selectbox(
+            "Publication Period",
+            options=list(
+                NEWS_PERIOD_OPTIONS.keys()
+            ),
+            index=1,
+            key="stock_research_news_period",
+        )
+
+    with control_3:
+        news_type_label = st.selectbox(
+            "Content Type",
+            options=list(
+                NEWS_TYPE_OPTIONS.keys()
+            ),
+            index=0,
+            key="stock_research_news_type",
+        )
+
+    requested_tab = NEWS_TYPE_OPTIONS[
+        news_type_label
+    ]
+
+    with st.spinner(
+        f"Loading recent news for {news_ticker}..."
+    ):
+        news_package = load_company_news(
+            news_ticker,
+            requested_tab,
+            count=50,
+        )
+
+    retrieved_at = pd.Timestamp(
+        news_package["retrieved_at"]
+    )
+
+    if retrieved_at.tzinfo is None:
+        retrieved_at = retrieved_at.tz_localize(
+            "UTC"
+        )
+    else:
+        retrieved_at = retrieved_at.tz_convert(
+            "UTC"
+        )
+
+    if news_package[
+        "used_search_fallback"
+    ]:
+        st.warning(
+            "The ticker-specific Yahoo Finance feed did not return "
+            "usable articles. Finance Bro is showing the Yahoo Finance "
+            "search fallback, which may include broader company-related "
+            "coverage."
+        )
+
+    raw_articles = news_package[
+        "articles"
+    ]
+
+    articles = prepare_news_articles(
+        raw_articles,
+        news_period,
+        news_type_label,
+        limit=8,
+    )
+
+    st.caption(
+        f"Retrieved through {news_package['retrieval_method']} on "
+        f"{retrieved_at.strftime('%d %b %Y, %H:%M UTC')}. "
+        "Duplicate links are removed and articles without a verifiable "
+        "publication timestamp are excluded."
+    )
+
+    if not articles:
+        st.info(
+            "No dated articles matched the selected company, period "
+            "and content type. Try 30 days or choose All."
+        )
+
+        errors = [
+            news_package.get(
+                "primary_error",
+                "",
+            ),
+            news_package.get(
+                "fallback_error",
+                "",
+            ),
+        ]
+
+        errors = [
+            error
+            for error in errors
+            if error
+        ]
+
+        if errors:
+            with st.expander(
+                "Data-provider details",
+                expanded=False,
+            ):
+                for error in errors:
+                    st.code(
+                        error
+                    )
+
+        return
+
+    for article in articles:
+        with st.container(
+            border=True
+        ):
+            content_column, action_column = st.columns(
+                [5.0, 1.25],
+                vertical_alignment="top",
+            )
+
+            with content_column:
+                st.markdown(
+                    "#### "
+                    + escape_markdown_text(
+                        article["title"]
+                    )
+                )
+
+                published_text = article[
+                    "published_at"
+                ].tz_convert(
+                    "UTC"
+                ).strftime(
+                    "%d %b %Y, %H:%M UTC"
+                )
+
+                st.caption(
+                    f"{article['publisher']} · "
+                    f"{published_text} · "
+                    f"{article['article_type']}"
+                )
+
+                if article[
+                    "summary"
+                ]:
+                    st.write(
+                        article["summary"]
+                    )
+                else:
+                    st.caption(
+                        "The publisher did not supply a summary in "
+                        "the available news metadata."
+                    )
+
+                st.caption(
+                    f"Source: {article['publisher']} · "
+                    f"Published: {published_text} · "
+                    f"Retrieved by Finance Bro: "
+                    f"{retrieved_at.strftime('%d %b %Y, %H:%M UTC')}"
+                )
+
+            with action_column:
+                if article[
+                    "url"
+                ]:
+                    st.link_button(
+                        "Read full article",
+                        article["url"],
+                        use_container_width=True,
+                    )
+                else:
+                    st.caption(
+                        "Original link unavailable"
+                    )
+
+    with st.expander(
+        "News data and interpretation",
+        expanded=False,
+    ):
+        st.write(
+            "Finance Bro does not rewrite headlines or infer whether "
+            "an article is bullish or bearish. Summaries shown here are "
+            "the descriptions supplied in Yahoo Finance's news metadata. "
+            "Open the original publisher's article for full context."
+        )
+        st.write(
+            "News availability varies by company, market, publisher and "
+            "region. Publication times are displayed in UTC. A recent "
+            "article can explain market attention, but it does not prove "
+            "that the news caused a price movement."
+        )
 
 
 def parse_tickers(raw_input: str) -> list[str]:
@@ -1262,10 +1915,18 @@ def render_stock_research() -> None:
         f"{', '.join(valid_tickers)}"
     )
 
-    price_tab, snapshot_tab, statements_tab, trends_tab, portfolio_tab = st.tabs(
+    (
+        price_tab,
+        snapshot_tab,
+        news_tab,
+        statements_tab,
+        trends_tab,
+        portfolio_tab,
+    ) = st.tabs(
         [
             "Price Explorer",
             "Company Snapshot",
+            "Latest News",
             "Financial Statements",
             "Trends & Ratios",
             "Build Portfolio",
@@ -1694,6 +2355,11 @@ def render_stock_research() -> None:
             profile = snapshot_package["profile"]
         render_company_snapshot(snapshot_ticker, profile)
 
+    with news_tab:
+        render_latest_news(
+            valid_tickers
+        )
+
     with statements_tab:
         statement_control_1, statement_control_2, statement_control_3 = st.columns(3)
 
@@ -1815,7 +2481,7 @@ def render_stock_research() -> None:
             if not portfolio_selection:
                 st.error("Select at least one stock to transfer.")
             else:
-                st.session_state["portfolio_ticker_input"] = ", ".join(portfolio_selection)
+                st.session_state["portfolio_ticker_input_v2"] = ", ".join(portfolio_selection)
                 st.session_state["pending_analysis_mode"] = "Portfolio Analysis"
                 st.rerun()
 
