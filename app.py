@@ -305,19 +305,21 @@ render_html(
 
         .fb-hero-tags {
             display: flex;
-            flex-wrap: wrap;
-            gap: 0.62rem;
+            flex-wrap: nowrap;
+            align-items: center;
+            gap: 0.55rem;
             margin-top: 1.25rem;
         }
 
         .fb-tag {
-            padding: 0.5rem 0.78rem;
+            padding: 0.48rem 0.72rem;
             border: 1px solid var(--fb-border);
             border-radius: 999px;
             background: #FFFFFF;
             color: var(--fb-navy);
-            font-size: 0.82rem;
+            font-size: 0.78rem;
             font-weight: 720;
+            white-space: nowrap;
             box-shadow: 0 5px 14px rgba(10, 31, 68, 0.05);
         }
 
@@ -835,6 +837,10 @@ render_html(
                 padding: 1.65rem;
             }
 
+            .fb-hero-tags {
+                flex-wrap: wrap;
+            }
+
             .fb-hero-logo-wrap {
                 justify-content: flex-start;
             }
@@ -1329,7 +1335,7 @@ render_html(
 
             <div class="fb-hero-tags">
                 <span class="fb-tag">
-                    <strong>✓</strong> Multi-Currency Analytics
+                    <strong>✓</strong> Portfolio &amp; Risk Analytics
                 </span>
                 <span class="fb-tag">
                     <strong>✓</strong> Data Quality &amp; Regression
