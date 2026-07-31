@@ -431,19 +431,142 @@ def make_line_chart(
     return figure
 
 
-def make_volume_chart(history: pd.DataFrame, ticker: str) -> go.Figure | None:
-    if "Volume" not in history.columns or history["Volume"].dropna().empty:
-        return None
+def make_volume_chart(
+    history: pd.DataFrame,
+    ticker: str,
+    period_label: str = "1 year",
+) -> tuple[go.Figure | None, str]:
+    """Create a readable volume chart with period filtering and aggregation."""
 
-    figure = px.bar(
-        history.reset_index(),
-        x="Date",
-        y="Volume",
-        title=f"{ticker} — Daily Trading Volume",
+    if "Volume" not in history.columns or history["Volume"].dropna().empty:
+        return None, "Trading-volume data is unavailable for this company."
+
+    volume = history[["Volume"]].copy()
+    volume.index = pd.to_datetime(volume.index)
+    volume["Volume"] = pd.to_numeric(volume["Volume"], errors="coerce")
+    volume = volume.dropna(subset=["Volume"]).sort_index()
+
+    if volume.empty:
+        return None, "Trading-volume data is unavailable for this company."
+
+    period_days = {
+        "3 months": 93,
+        "6 months": 186,
+        "1 year": 366,
+        "3 years": 1_096,
+        "All available": None,
+    }
+
+    selected_days = period_days.get(period_label, 366)
+    latest_date = volume.index.max()
+
+    if selected_days is not None:
+        start_date = latest_date - pd.Timedelta(days=selected_days)
+        volume = volume.loc[volume.index >= start_date]
+
+    if volume.empty:
+        return None, "There are no volume observations in the selected period."
+
+    span_days = max((volume.index.max() - volume.index.min()).days, 1)
+
+    if span_days <= 550:
+        chart_data = volume.copy()
+        frequency_label = "Daily"
+        average_window = 20
+        average_label = "20-session average"
+        aggregation_note = "Each bar represents one trading session."
+    elif span_days <= 1_500:
+        chart_data = volume.resample("W-FRI").sum(min_count=1).dropna()
+        frequency_label = "Weekly"
+        average_window = 4
+        average_label = "4-week average"
+        aggregation_note = "Daily volumes are aggregated into weekly totals."
+    else:
+        chart_data = volume.resample("MS").sum(min_count=1).dropna()
+        frequency_label = "Monthly"
+        average_window = 3
+        average_label = "3-month average"
+        aggregation_note = "Daily volumes are aggregated into monthly totals."
+
+    chart_data["Average Volume"] = (
+        chart_data["Volume"]
+        .rolling(
+            window=average_window,
+            min_periods=max(2, average_window // 3),
+        )
+        .mean()
     )
-    figure.update_traces(hovertemplate="%{x|%d %b %Y}<br>Volume: %{y:,.0f}<extra></extra>")
-    figure.update_layout(height=400, xaxis_title="Date", yaxis_title="Volume")
-    return figure
+
+    figure = go.Figure()
+
+    figure.add_trace(
+        go.Bar(
+            x=chart_data.index,
+            y=chart_data["Volume"],
+            name=f"{frequency_label} volume",
+            marker_color="#2563EB",
+            marker_line_color="#1D4ED8",
+            marker_line_width=0.35,
+            opacity=0.90,
+            hovertemplate=(
+                "%{x|%d %b %Y}"
+                "<br>Volume: %{y:,.0f}"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    figure.add_trace(
+        go.Scatter(
+            x=chart_data.index,
+            y=chart_data["Average Volume"],
+            mode="lines",
+            name=average_label,
+            line=dict(
+                color="#0A1F44",
+                width=3.0,
+            ),
+            hovertemplate=(
+                "%{x|%d %b %Y}"
+                "<br>Average volume: %{y:,.0f}"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    figure.update_layout(
+        title=f"{ticker} — {frequency_label} Trading Volume",
+        height=430,
+        hovermode="x unified",
+        xaxis_title="Date",
+        yaxis_title="Volume",
+        legend_title_text="Series",
+        bargap=0.08,
+        plot_bgcolor="#FFFFFF",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#0A1F44"),
+        margin=dict(l=45, r=25, t=75, b=45),
+    )
+
+    figure.update_xaxes(
+        showgrid=False,
+        rangeslider_visible=False,
+    )
+    figure.update_yaxes(
+        tickformat=".3s",
+        rangemode="tozero",
+        gridcolor="#D9E2F2",
+        zerolinecolor="#AFC0D8",
+    )
+
+    first_date = chart_data.index.min().strftime("%d %b %Y")
+    last_date = chart_data.index.max().strftime("%d %b %Y")
+    note = (
+        f"{aggregation_note} Showing {first_date} to {last_date}. "
+        f"The line shows the {average_label.lower()}."
+    )
+
+    return figure, note
 
 
 def scale_statement_for_display(
@@ -1471,14 +1594,44 @@ def render_stock_research() -> None:
             "Results are historical and do not represent forecasts."
         )
 
-        focus_ticker = st.selectbox(
-            "Volume Chart Company",
-            options=valid_tickers,
-            key="stock_research_volume_ticker",
+        volume_company_column, volume_period_column = st.columns([1.25, 1.0])
+
+        with volume_company_column:
+            focus_ticker = st.selectbox(
+                "Volume Chart Company",
+                options=valid_tickers,
+                key="stock_research_volume_ticker",
+            )
+
+        with volume_period_column:
+            volume_period = st.selectbox(
+                "Volume Chart Period",
+                options=[
+                    "3 months",
+                    "6 months",
+                    "1 year",
+                    "3 years",
+                    "All available",
+                ],
+                index=2,
+                key="stock_research_volume_period",
+                help=(
+                    "Long periods are automatically aggregated into weekly "
+                    "or monthly totals so the chart remains readable."
+                ),
+            )
+
+        volume_figure, volume_note = make_volume_chart(
+            histories[focus_ticker],
+            focus_ticker,
+            volume_period,
         )
-        volume_figure = make_volume_chart(histories[focus_ticker], focus_ticker)
+
         if volume_figure is not None:
             st.plotly_chart(volume_figure, use_container_width=True)
+            st.caption(volume_note)
+        else:
+            st.info(volume_note)
 
         if benchmark_ticker and benchmark_history is not None:
             st.markdown("### Benchmark Comparison")
