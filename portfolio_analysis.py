@@ -2102,6 +2102,149 @@ def download_ecb_estr_3m_series(
     return series
 
 
+
+def download_ecb_deposit_facility_series(
+    start_date,
+    end_date,
+) -> pd.Series:
+    """
+    Downloads the official ECB deposit-facility rate.
+
+    Series key:
+        FM.D.U2.EUR.4F.KR.DFR.LEV
+
+    The source is event-driven: an observation is published when the
+    policy rate changes. Values are annualized percentages.
+    """
+
+    start_timestamp = pd.Timestamp(
+        start_date
+    ).normalize()
+
+    end_timestamp = pd.Timestamp(
+        end_date
+    ).normalize()
+
+    query_parameters = urlencode({
+        "startPeriod":
+            start_timestamp.strftime(
+                "%Y-%m-%d"
+            ),
+        "endPeriod":
+            end_timestamp.strftime(
+                "%Y-%m-%d"
+            ),
+        "format":
+            "csvdata",
+    })
+
+    request_url = (
+        "https://data-api.ecb.europa.eu/"
+        "service/data/FM/D.U2.EUR.4F.KR.DFR.LEV"
+        f"?{query_parameters}"
+    )
+
+    request = Request(
+        request_url,
+        headers={
+            "User-Agent":
+                "Finance Bro educational portfolio app"
+        },
+    )
+
+    try:
+
+        with urlopen(
+            request,
+            timeout=20,
+        ) as response:
+
+            response_text = (
+                response
+                .read()
+                .decode("utf-8")
+            )
+
+    except Exception as error:
+        raise ValueError(
+            "The ECB deposit-facility-rate series could not "
+            f"be downloaded: {error}"
+        ) from error
+
+    data = pd.read_csv(
+        StringIO(
+            response_text
+        )
+    )
+
+    required_columns = {
+        "TIME_PERIOD",
+        "OBS_VALUE",
+    }
+
+    if not required_columns.issubset(
+        data.columns
+    ):
+        raise ValueError(
+            "The ECB deposit-facility response did not contain "
+            "the expected fields."
+        )
+
+    data[
+        "TIME_PERIOD"
+    ] = pd.to_datetime(
+        data[
+            "TIME_PERIOD"
+        ],
+        errors="coerce",
+    )
+
+    data[
+        "OBS_VALUE"
+    ] = pd.to_numeric(
+        data[
+            "OBS_VALUE"
+        ],
+        errors="coerce",
+    )
+
+    data = (
+        data
+        .dropna(
+            subset=[
+                "TIME_PERIOD",
+                "OBS_VALUE",
+            ]
+        )
+        .sort_values(
+            "TIME_PERIOD"
+        )
+        .drop_duplicates(
+            subset="TIME_PERIOD",
+            keep="last",
+        )
+    )
+
+    if data.empty:
+        raise ValueError(
+            "No ECB deposit-facility-rate observations were "
+            "available for the requested period."
+        )
+
+    return pd.Series(
+        data[
+            "OBS_VALUE"
+        ].to_numpy(
+            dtype=float
+        ),
+        index=pd.DatetimeIndex(
+            data[
+                "TIME_PERIOD"
+            ]
+        ).normalize(),
+        name="ECB Deposit Facility Rate (%)",
+    )
+
 def download_fred_dgs3mo_series(
     start_date,
     end_date,
@@ -2249,16 +2392,22 @@ def build_risk_free_return_table(
     manual_annual_risk_free_rate: Optional[float] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """
-    Aligns a risk-free yield with market dates using the latest official
-    observation available on or before each date.
+    Aligns an official risk-free proxy with market dates.
 
-    No linear interpolation is performed.
+    EUR automatic hierarchy:
+        1. ECB 3-month compounded €STR, whenever available.
+        2. ECB deposit-facility rate for earlier dates or when the
+           compounded €STR endpoint is temporarily unavailable.
+
+    USD automatic hierarchy:
+        1. FRED DGS3MO 3-month U.S. Treasury yield.
+
+    The latest official observation available on or before each market
+    date is used. No linear interpolation is performed.
     """
 
-    portfolio_currency = (
-        validate_portfolio_currency(
-            portfolio_currency
-        )
+    portfolio_currency = validate_portfolio_currency(
+        portfolio_currency
     )
 
     target_dates = pd.DatetimeIndex(
@@ -2268,9 +2417,8 @@ def build_risk_free_return_table(
     )
 
     if target_dates.tz is not None:
-        target_dates = (
-            target_dates
-            .tz_localize(None)
+        target_dates = target_dates.tz_localize(
+            None
         )
 
     target_dates = (
@@ -2302,9 +2450,105 @@ def build_risk_free_return_table(
         - pd.Timedelta(days=45)
     )
 
-    end_date = (
-        target_dates.max()
-    )
+    end_date = target_dates.max()
+
+    target_frame = pd.DataFrame({
+        "Date":
+            pd.DatetimeIndex(
+                target_dates
+            ).astype(
+                "datetime64[ns]"
+            ),
+    })
+
+    def prepare_source_frame(
+        series: pd.Series,
+        source_label: str,
+        series_id: str,
+    ) -> pd.DataFrame:
+        frame = (
+            series
+            .dropna()
+            .sort_index()
+            .rename(
+                "Annual Risk-Free Rate (%)"
+            )
+            .reset_index()
+        )
+
+        if frame.empty:
+            return pd.DataFrame(
+                columns=[
+                    "Source Observation Date",
+                    "Annual Risk-Free Rate (%)",
+                    "Risk-Free Source",
+                    "Risk-Free Series ID",
+                ]
+            )
+
+        frame = frame.rename(
+            columns={
+                frame.columns[0]:
+                    "Source Observation Date"
+            }
+        )
+
+        frame[
+            "Source Observation Date"
+        ] = pd.to_datetime(
+            frame[
+                "Source Observation Date"
+            ],
+            errors="coerce",
+        ).dt.normalize()
+
+        frame[
+            "Annual Risk-Free Rate (%)"
+        ] = pd.to_numeric(
+            frame[
+                "Annual Risk-Free Rate (%)"
+            ],
+            errors="coerce",
+        )
+
+        frame = (
+            frame
+            .dropna(
+                subset=[
+                    "Source Observation Date",
+                    "Annual Risk-Free Rate (%)",
+                ]
+            )
+            .sort_values(
+                "Source Observation Date"
+            )
+            .drop_duplicates(
+                subset="Source Observation Date",
+                keep="last",
+            )
+        )
+
+        frame[
+            "Source Observation Date"
+        ] = frame[
+            "Source Observation Date"
+        ].astype(
+            "datetime64[ns]"
+        )
+
+        frame[
+            "Risk-Free Source"
+        ] = source_label
+
+        frame[
+            "Risk-Free Series ID"
+        ] = series_id
+
+        return frame
+
+    primary_download_error = ""
+    fallback_download_error = ""
+    fallback_observation_count = 0
 
     if normalized_mode == "manual":
 
@@ -2333,34 +2577,304 @@ def build_risk_free_return_table(
             f"{annual_rate_percent:.4f}%."
         )
 
+        source_frame = prepare_source_frame(
+            source_series,
+            source_name,
+            source_series_id,
+        )
+
+        aligned = pd.merge_asof(
+            target_frame.sort_values(
+                "Date"
+            ),
+            source_frame.sort_values(
+                "Source Observation Date"
+            ),
+            left_on="Date",
+            right_on="Source Observation Date",
+            direction="backward",
+            allow_exact_matches=True,
+        )
+
+        alignment_method = (
+            "The constant manual annual rate is applied to every "
+            "market date."
+        )
+
     elif normalized_mode == "automatic":
 
         if portfolio_currency == "EUR":
 
-            source_series = (
-                download_ecb_estr_3m_series(
-                    start_date=lookback_start,
-                    end_date=end_date,
+            estr_series = pd.Series(
+                dtype=float
+            )
+
+            try:
+                estr_series = (
+                    download_ecb_estr_3m_series(
+                        start_date=lookback_start,
+                        end_date=end_date,
+                    )
                 )
+            except Exception as error:
+                primary_download_error = str(
+                    error
+                )
+
+            deposit_series = pd.Series(
+                dtype=float
             )
 
-            source_name = (
-                "European Central Bank — "
-                "3-Month Compounded €STR"
+            try:
+                deposit_series = (
+                    download_ecb_deposit_facility_series(
+                        start_date=pd.Timestamp(
+                            "1999-01-01"
+                        ),
+                        end_date=end_date,
+                    )
+                )
+            except Exception as error:
+                fallback_download_error = str(
+                    error
+                )
+
+            estr_frame = prepare_source_frame(
+                estr_series,
+                (
+                    "European Central Bank — "
+                    "3-Month Compounded €STR"
+                ),
+                "EST.B.EU000A2QQF32.CR",
             )
 
-            source_series_id = (
-                "EST.B.EU000A2QQF32.CR"
+            deposit_frame = prepare_source_frame(
+                deposit_series,
+                (
+                    "European Central Bank — "
+                    "Deposit Facility Rate "
+                    "(historical fallback)"
+                ),
+                "FM.D.U2.EUR.4F.KR.DFR.LEV",
             )
 
-            source_url = (
-                "https://data.ecb.europa.eu/data/"
-                "datasets/EST/EST.B.EU000A2QQF32.CR"
+            estr_aligned = pd.merge_asof(
+                target_frame.sort_values(
+                    "Date"
+                ),
+                estr_frame.sort_values(
+                    "Source Observation Date"
+                ),
+                left_on="Date",
+                right_on="Source Observation Date",
+                direction="backward",
+                allow_exact_matches=True,
+            ).rename(
+                columns={
+                    "Source Observation Date":
+                        "€STR Observation Date",
+                    "Annual Risk-Free Rate (%)":
+                        "€STR Annual Rate (%)",
+                    "Risk-Free Source":
+                        "€STR Source",
+                    "Risk-Free Series ID":
+                        "€STR Series ID",
+                }
             )
 
-            rate_description = (
-                "Backward-looking compounded €STR average rate "
-                "for a standardized 3-month tenor."
+            deposit_aligned = pd.merge_asof(
+                target_frame.sort_values(
+                    "Date"
+                ),
+                deposit_frame.sort_values(
+                    "Source Observation Date"
+                ),
+                left_on="Date",
+                right_on="Source Observation Date",
+                direction="backward",
+                allow_exact_matches=True,
+            ).rename(
+                columns={
+                    "Source Observation Date":
+                        "Fallback Observation Date",
+                    "Annual Risk-Free Rate (%)":
+                        "Fallback Annual Rate (%)",
+                    "Risk-Free Source":
+                        "Fallback Source",
+                    "Risk-Free Series ID":
+                        "Fallback Series ID",
+                }
+            )
+
+            aligned = target_frame.copy()
+
+            use_primary = estr_aligned[
+                "€STR Annual Rate (%)"
+            ].notna()
+
+            aligned[
+                "Annual Risk-Free Rate (%)"
+            ] = estr_aligned[
+                "€STR Annual Rate (%)"
+            ].where(
+                use_primary,
+                deposit_aligned[
+                    "Fallback Annual Rate (%)"
+                ],
+            )
+
+            aligned[
+                "Source Observation Date"
+            ] = estr_aligned[
+                "€STR Observation Date"
+            ].where(
+                use_primary,
+                deposit_aligned[
+                    "Fallback Observation Date"
+                ],
+            )
+
+            aligned[
+                "Risk-Free Source"
+            ] = estr_aligned[
+                "€STR Source"
+            ].where(
+                use_primary,
+                deposit_aligned[
+                    "Fallback Source"
+                ],
+            )
+
+            aligned[
+                "Risk-Free Series ID"
+            ] = estr_aligned[
+                "€STR Series ID"
+            ].where(
+                use_primary,
+                deposit_aligned[
+                    "Fallback Series ID"
+                ],
+            )
+
+            fallback_observation_count = int(
+                (
+                    ~use_primary
+                    & aligned[
+                        "Annual Risk-Free Rate (%)"
+                    ].notna()
+                ).sum()
+            )
+
+            used_primary = bool(
+                use_primary.any()
+            )
+
+            used_fallback = bool(
+                (
+                    aligned[
+                        "Risk-Free Series ID"
+                    ]
+                    == "FM.D.U2.EUR.4F.KR.DFR.LEV"
+                ).any()
+            )
+
+            if used_primary and used_fallback:
+                source_name = (
+                    "ECB 3-Month Compounded €STR, with the "
+                    "ECB Deposit Facility Rate as a historical fallback"
+                )
+                source_series_id = (
+                    "EST.B.EU000A2QQF32.CR | "
+                    "FM.D.U2.EUR.4F.KR.DFR.LEV"
+                )
+                source_url = (
+                    "https://data.ecb.europa.eu/data/datasets/EST/"
+                    "EST.B.EU000A2QQF32.CR | "
+                    "https://data.ecb.europa.eu/data/datasets/FM/"
+                    "FM.D.U2.EUR.4F.KR.DFR.LEV"
+                )
+                rate_description = (
+                    "The ECB 3-month compounded €STR is used from "
+                    "its first available observation. Earlier market "
+                    "dates use the official ECB deposit-facility rate "
+                    "and are explicitly identified as fallback dates."
+                )
+
+            elif used_primary:
+                source_name = (
+                    "European Central Bank — "
+                    "3-Month Compounded €STR"
+                )
+                source_series_id = (
+                    "EST.B.EU000A2QQF32.CR"
+                )
+                source_url = (
+                    "https://data.ecb.europa.eu/data/datasets/EST/"
+                    "EST.B.EU000A2QQF32.CR"
+                )
+                rate_description = (
+                    "Backward-looking compounded €STR average rate "
+                    "for a standardized 3-month tenor."
+                )
+
+            elif used_fallback:
+                source_name = (
+                    "European Central Bank — Deposit Facility Rate "
+                    "(automatic fallback)"
+                )
+                source_series_id = (
+                    "FM.D.U2.EUR.4F.KR.DFR.LEV"
+                )
+                source_url = (
+                    "https://data.ecb.europa.eu/data/datasets/FM/"
+                    "FM.D.U2.EUR.4F.KR.DFR.LEV"
+                )
+                rate_description = (
+                    "The primary compounded €STR series was unavailable "
+                    "for the requested dates, so the official ECB deposit-"
+                    "facility rate was used and identified as a fallback."
+                )
+
+            else:
+                error_details = []
+
+                if primary_download_error:
+                    error_details.append(
+                        "€STR: "
+                        + primary_download_error
+                    )
+
+                if fallback_download_error:
+                    error_details.append(
+                        "deposit facility: "
+                        + fallback_download_error
+                    )
+
+                detail_text = (
+                    " ".join(
+                        error_details
+                    )
+                    if error_details
+                    else (
+                        "No official observations covered the "
+                        "requested dates."
+                    )
+                )
+
+                raise ValueError(
+                    "Automatic EUR risk-free data could not be "
+                    "prepared. "
+                    + detail_text
+                    + " Select Manual risk-free mode to continue."
+                )
+
+            alignment_method = (
+                "For EUR, the ECB 3-month compounded €STR is the "
+                "primary source. Dates before its first available "
+                "observation use the ECB deposit-facility rate. "
+                "For each source, the last official observation "
+                "available on or before the market date is used; "
+                "no linear interpolation is performed."
             )
 
         else:
@@ -2388,87 +2902,35 @@ def build_risk_free_return_table(
                 "yield quoted on an investment basis."
             )
 
+            source_frame = prepare_source_frame(
+                source_series,
+                source_name,
+                source_series_id,
+            )
+
+            aligned = pd.merge_asof(
+                target_frame.sort_values(
+                    "Date"
+                ),
+                source_frame.sort_values(
+                    "Source Observation Date"
+                ),
+                left_on="Date",
+                right_on="Source Observation Date",
+                direction="backward",
+                allow_exact_matches=True,
+            )
+
+            alignment_method = (
+                "The latest official U.S. Treasury observation "
+                "available on or before each market date is used; "
+                "no linear interpolation is performed."
+            )
+
     else:
         raise ValueError(
             "Risk-free mode must be Automatic or Manual."
         )
-
-    source_frame = (
-        source_series
-        .dropna()
-        .sort_index()
-        .rename(
-            "Annual Risk-Free Rate (%)"
-        )
-        .reset_index()
-    )
-
-    # The date column can arrive with different names depending on the
-    # official source (for example TIME_PERIOD, DATE or index). Renaming the
-    # first column by position makes the alignment source-independent.
-    source_frame = source_frame.rename(
-        columns={
-            source_frame.columns[0]:
-                "Source Observation Date"
-        }
-    )
-
-    source_frame[
-        "Source Observation Date"
-    ] = pd.to_datetime(
-        source_frame[
-            "Source Observation Date"
-        ],
-        errors="coerce",
-    ).dt.normalize()
-
-    source_frame = source_frame.dropna(
-        subset=[
-            "Source Observation Date",
-            "Annual Risk-Free Rate (%)",
-        ]
-    )
-
-    # Pandas merge_asof requires both date keys to have exactly the same
-    # datetime resolution. Official sources and Yahoo Finance can otherwise
-    # arrive as datetime64[s], datetime64[us] or datetime64[ns].
-    source_frame[
-        "Source Observation Date"
-    ] = source_frame[
-        "Source Observation Date"
-    ].astype(
-        "datetime64[ns]"
-    )
-
-    target_frame = pd.DataFrame({
-        "Date":
-            pd.DatetimeIndex(
-                target_dates
-            ).astype(
-                "datetime64[ns]"
-            ),
-    })
-
-    target_frame[
-        "Date"
-    ] = target_frame[
-        "Date"
-    ].astype(
-        "datetime64[ns]"
-    )
-
-    aligned = pd.merge_asof(
-        target_frame.sort_values(
-            "Date"
-        ),
-        source_frame.sort_values(
-            "Source Observation Date"
-        ),
-        left_on="Date",
-        right_on="Source Observation Date",
-        direction="backward",
-        allow_exact_matches=True,
-    )
 
     if aligned[
         "Annual Risk-Free Rate (%)"
@@ -2480,6 +2942,17 @@ def build_risk_free_return_table(
             ].isna(),
             "Date",
         ].iloc[0]
+
+        if (
+            normalized_mode == "automatic"
+            and portfolio_currency == "EUR"
+        ):
+            raise ValueError(
+                "No official automatic EUR risk-free observation "
+                "could be aligned with the market date "
+                f"{first_missing_date.date()}. Select Manual "
+                "risk-free mode for this period."
+            )
 
         raise ValueError(
             "Risk-free data could not be aligned with the "
@@ -2523,11 +2996,18 @@ def build_risk_free_return_table(
         ]
     ).dt.days
 
-    aligned = (
-        aligned
-        .set_index(
-            "Date"
+    aligned = aligned.set_index(
+        "Date"
+    )
+
+    source_breakdown = (
+        aligned[
+            "Risk-Free Source"
+        ]
+        .value_counts(
+            dropna=False
         )
+        .to_dict()
     )
 
     metadata = {
@@ -2546,10 +3026,7 @@ def build_risk_free_return_table(
         "risk_free_description":
             rate_description,
         "risk_free_alignment_method":
-            (
-                "Last official observation available on or before each "
-                "market date; no linear interpolation."
-            ),
+            alignment_method,
         "risk_free_daily_conversion":
             (
                 "r_f,daily = (1 + y_annual)^(1/252) - 1"
@@ -2586,6 +3063,16 @@ def build_risk_free_return_table(
                     "Staleness (Calendar Days)"
                 ].max()
             ),
+        "risk_free_fallback_observations":
+            int(
+                fallback_observation_count
+            ),
+        "risk_free_source_breakdown":
+            source_breakdown,
+        "risk_free_primary_download_error":
+            primary_download_error,
+        "risk_free_fallback_download_error":
+            fallback_download_error,
     }
 
     return (
@@ -4677,5 +5164,6 @@ def analyze_portfolio(
             stress_test_details,
         **data_quality_results,
     }
+
 
 
