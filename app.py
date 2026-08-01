@@ -86,7 +86,7 @@ def render_html(html_content: str) -> None:
 
 st.set_page_config(
     page_title="Finance Bro | Portfolio Intelligence",
-    page_icon=app_icon_image,
+    page_icon="finance_bro_app_icon.png",
     layout="wide",
     initial_sidebar_state="expanded",
 )
